@@ -1,0 +1,15 @@
+{
+  "id": "trajectory-viewer",
+  "name": "Trajectory Viewer",
+  "icon": "spline",
+  "description": "Draws a trajectory from a file on the Home map, under the flown track",
+  "version": "1.0.0",
+  "author": "Maximilian Böck",
+  "order": 40,
+  "scripts": [
+    "trajectory-viewer.js"
+  ],
+  "styles": [
+    "trajectory-viewer.css"
+  ]
+}
