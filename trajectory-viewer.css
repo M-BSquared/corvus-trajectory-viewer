@@ -22,23 +22,41 @@
   color: var(--text-2);
 }
 
-.tv-summary,
-.tv-status { margin-top: 10px; }
+/* The one card: every block an even step from the next, so a caption never
+   sits against the control above it. */
+.tv-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.tv-card > [hidden],
+.tv-file > [hidden] { display: none; }
+
+/* The file and its summary, ruled off from the settings that work on it. */
+.tv-file {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
 
 /* The local frame's own controls, between Coordinates and Colour, set in
    from the left so they read as part of the choice above them. */
 .tv-local {
-  margin: 0 0 12px;
-  padding-left: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 12px;
   border-left: 2px solid var(--border-soft);
 }
+.tv-local > .btn { align-self: flex-start; }
 .tv-local[hidden] { display: none; }
 .tv-anchor {
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.5;
   color: var(--text-2);
-  margin: 4px 0 8px;
   overflow-wrap: anywhere;
 }
 
@@ -66,8 +84,9 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
 }
+/* The switch's row and the buttons under it close the card together. */
+.tv-actions > .btn { flex: 1 1 0; min-width: 120px; }
 
 @media (prefers-reduced-motion: reduce) {
   .tv-swatch { transition: none; }

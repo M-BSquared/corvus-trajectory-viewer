@@ -313,7 +313,7 @@ function testStartPutsASavedLineBack() {
   tv.start(api);
   assert.ok(api.drawn[tv.LINE_KEY], "drawn at start, without the plugin being opened");
   assert.deepEqual(api.drawn[tv.LINE_KEY].coords, [[11, 48], [11.01, 48.01]]);
-  assert.equal(api.drawn[tv.LINE_KEY].opts.color, "#A3E635", "in the saved colour");
+  assert.equal(api.drawn[tv.LINE_KEY].opts.color, "#7BD389", "in the saved colour");
 
   const off = fakeApi(Object.assign({}, SAVED_LINE, { drawn: false }));
   tv.start(off);
@@ -379,7 +379,9 @@ function testLongTextsAreBehindInfoIcons() {
   tv.init(container, api);
   assert.ok(all(container, ".ui-info").length >= 4, "file, coordinates, axes and map each have one");
   assert.equal(all(container, ".field-hint").length, 0, "no paragraph under a control");
-  assert.equal(all(container, ".page-card").length, 2, "the file, and everything about the line");
+  const cards = all(container, ".page-card");
+  assert.equal(cards.length, 1, "one card: the file, and everything about the line");
+  assert.ok(cards[0].children[0].classList.contains("tv-file"), "the file on top");
   tv.destroy(container);
 }
 

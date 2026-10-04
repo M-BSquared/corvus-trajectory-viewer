@@ -320,7 +320,7 @@ Corvus.pluginTrajectory = (function () {
   function colorOf(api, id) {
     const colors = (api && api.map && api.map.colors) || [];
     const hit = colors.find((c) => c.id === id) || colors[0];
-    return hit ? hit.color : "#22D3EE";
+    return hit ? hit.color : "#2BC4E4";
   }
 
   /** Draw the saved line; the reason when it cannot be drawn, else "". */
@@ -405,8 +405,7 @@ Corvus.pluginTrajectory = (function () {
     fileRow.appendChild(fileName);
     fileRow.appendChild(fileInput);
     const summary = ui.message({ className: "tv-summary" });
-    const fileCard = ui.card({});
-    fileCard.appendChild(ui.field({
+    const fileField = ui.field({
       label: "File",
       control: fileRow,
       info: "One point per line: x, y and optionally z, separated by commas, " +
@@ -414,10 +413,15 @@ Corvus.pluginTrajectory = (function () {
             "write decimals with a comma.\n" +
             "Empty lines, a header line such as lon,lat,alt, and lines " +
             "starting with #, // or % are passed over.",
-    }));
-    fileCard.appendChild(summary.el);
+    });
+    // The file and what was read from it are one block, ruled off from the
+    // settings below that work on it.
+    const fileBlock = document.createElement("div");
+    fileBlock.className = "tv-file";
+    fileBlock.appendChild(fileField);
+    fileBlock.appendChild(summary.el);
 
-    // ---- coordinates, colour and the map, in one card ----
+    // ---- coordinates, colour and the map ----
     const frameSelect = ui.select({
       id: "tvFrame",
       ariaLabel: "Coordinates",
@@ -525,7 +529,10 @@ Corvus.pluginTrajectory = (function () {
     });
     const status = ui.message({ className: "tv-status" });
 
+    // One card: the file on top, since everything below works on it.
     const lineCard = ui.card({});
+    lineCard.classList.add("tv-card");
+    lineCard.appendChild(fileBlock);
     lineCard.appendChild(ui.field({
       label: "Coordinates",
       control: frameSelect,
@@ -554,7 +561,6 @@ Corvus.pluginTrajectory = (function () {
     lineCard.appendChild(actions);
     lineCard.appendChild(status.el);
 
-    containerEl.appendChild(fileCard);
     containerEl.appendChild(lineCard);
 
     // ---- behaviour ----
