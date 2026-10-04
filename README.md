@@ -10,7 +10,7 @@ own path is always on top and you see at a glance where it leaves the
 reference.
 
 The file is plain text, one point per line, in WGS84 (longitude, latitude),
-GPS order (latitude, longitude) or metres in the aircraft's own frame.
+GPS order (latitude, longitude), UTM metres (EPSG:32632, 25832, 32633) or metres in the aircraft's own frame.
 
 The full description is in the
 [Corvus guide](https://m-bsquared.github.io/CorvusGCS/guide/plugins.html#trajectory-viewer).

@@ -14,6 +14,9 @@ window.Corvus = window.Corvus || {};
  *          longitude, y is latitude, both in degrees (GeoJSON, QGIS).
  *   gps    The order a GPS receiver or a phone shows: latitude first, then
  *          longitude, in degrees.
+ *   epsg32632 / epsg25832 / epsg32633
+ *          Projected metres, x is easting and y is northing, in UTM zone 32N
+ *          (WGS84 or ETRS89, the usual German survey frame) or zone 33N.
  *   local  Metres in a frame of the aircraft's own: it is 0, 0, 0, x points
  *          the way its nose points, y to its right (FRD, as PX4 has it, z
  *          down) or to its left (FLU, as ROS has it, z up). The frame is taken
@@ -49,6 +52,9 @@ Corvus.pluginTrajectory = (function () {
   const FRAMES = [
     { id: "wgs84", label: "WGS84 / EPSG:4326 (longitude, latitude)" },
     { id: "gps", label: "GPS (latitude, longitude)" },
+    { id: "epsg32632", label: "UTM 32N / EPSG:32632 (easting, northing)" },
+    { id: "epsg25832", label: "ETRS89 UTM 32N / EPSG:25832 (easting, northing)" },
+    { id: "epsg32633", label: "UTM 33N / EPSG:32633 (easting, northing)" },
     { id: "local", label: "Local frame (metres from the aircraft)" },
   ];
 
@@ -60,6 +66,14 @@ Corvus.pluginTrajectory = (function () {
   // WGS84 ellipsoid.
   const WGS84_A = 6378137;
   const WGS84_E2 = 6.69437999014e-3;
+
+  // Projected frames: UTM zone and hemisphere. EPSG:25832 differs from 32632
+  // only in the datum (ETRS89), under a metre from WGS84, so it shares the maths.
+  const UTM = {
+    epsg32632: { zone: 32, south: false },
+    epsg25832: { zone: 32, south: false },
+    epsg32633: { zone: 33, south: false },
+  };
 
   const NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
   const COMMENT_RE = /^(#|\/\/|%)/;
@@ -204,6 +218,47 @@ Corvus.pluginTrajectory = (function () {
     ];
   }
 
+  /**
+   * UTM easting and northing in metres to [lng, lat] (inverse transverse
+   * Mercator, Krueger series, millimetre accuracy inside a zone).
+   *
+   * Pure, and exported for the test suite.
+   */
+  function utmToLngLat(easting, northing, zone, south) {
+    const k0 = 0.9996;
+    const f = 1 - Math.sqrt(1 - WGS84_E2);
+    const n = f / (2 - f);
+    const n2 = n * n, n3 = n2 * n, n4 = n3 * n;
+    const A = (WGS84_A / (1 + n)) * (1 + n2 / 4 + n4 / 64);
+    const beta = [
+      n / 2 - (2 * n2) / 3 + (37 * n3) / 96,
+      n2 / 48 + n3 / 15,
+      (17 * n3) / 480,
+    ];
+    const delta = [
+      2 * n - (2 * n2) / 3 - 2 * n3,
+      (7 * n2) / 3 - (8 * n3) / 5,
+      (56 * n3) / 15,
+    ];
+    const xi = (northing - (south ? 1e7 : 0)) / (k0 * A);
+    const eta = (easting - 5e5) / (k0 * A);
+    let xiP = xi, etaP = eta;
+    for (let j = 1; j <= 3; j++) {
+      xiP -= beta[j - 1] * Math.sin(2 * j * xi) * Math.cosh(2 * j * eta);
+      etaP -= beta[j - 1] * Math.cos(2 * j * xi) * Math.sinh(2 * j * eta);
+    }
+    const chi = Math.asin(Math.sin(xiP) / Math.cosh(etaP));
+    let phi = chi;
+    for (let j = 1; j <= 3; j++) phi += delta[j - 1] * Math.sin(2 * j * chi);
+    const lam0 = (zone * 6 - 183) * Math.PI / 180;
+    const lam = lam0 + Math.atan2(Math.sinh(etaP), Math.cos(xiP));
+    return [lam * 180 / Math.PI, phi * 180 / Math.PI];
+  }
+
+  function p0InZoneRange(c) {
+    return Math.abs(c[1]) <= 84;
+  }
+
   function fitsDegrees(lng, lat) {
     return Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
   }
@@ -227,6 +282,19 @@ Corvus.pluginTrajectory = (function () {
       }
       return { coords: pts.map((p) => localToLngLat(p[0], p[1], anchor, axes)), error: "" };
     }
+    if (UTM[frame]) {
+      const { zone, south } = UTM[frame];
+      const out = pts.map((p) => utmToLngLat(p[0], p[1], zone, south));
+      if (out.every((c) => isFinite(c[0]) && isFinite(c[1]) && fitsDegrees(c[0], c[1])
+        && p0InZoneRange(c))) {
+        return { coords: out, error: "" };
+      }
+      return {
+        coords: [],
+        error: "These numbers are not UTM metres. Easting is about 166000 to 834000 " +
+          "and northing is up to 10000000. Degrees go under WGS84 or GPS.",
+      };
+    }
     const latFirst = frame === "gps";
     const coords = pts.map((p) => (latFirst ? [p[1], p[0]] : [p[0], p[1]]));
     if (coords.every((c) => fitsDegrees(c[0], c[1]))) return { coords, error: "" };
@@ -237,7 +305,9 @@ Corvus.pluginTrajectory = (function () {
         ? "These look like longitude first. Choose WGS84 / EPSG:4326."
         : "These look like latitude first. Choose GPS.";
     } else if (pts.some((p) => Math.abs(p[0]) > 360 || Math.abs(p[1]) > 360)) {
-      error += " Metres from the aircraft go under Local frame.";
+      error += pts.every((p) => p[0] >= 1e5 && p[0] <= 9e5 && p[1] > 0 && p[1] < 1e7)
+        ? " These look like UTM metres. Choose EPSG:32632 or EPSG:25832 (zone 32), or EPSG:32633 (zone 33)."
+        : " Metres from the aircraft go under Local frame.";
     }
     return { coords: [], error };
   }
@@ -539,6 +609,8 @@ Corvus.pluginTrajectory = (function () {
       info: "What the numbers in the file mean. A file does not say, so you choose.\n" +
             "WGS84 / EPSG:4326: degrees, x is longitude and y is latitude, the " +
             "order GIS tools write (GeoJSON, QGIS).\n" +
+            "UTM / EPSG:32632, 25832, 32633: metres, x is easting and y is " +
+            "northing (zone 32N covers Munich, 33N the east of Bavaria).\n" +
             "GPS: degrees, latitude first, then longitude, the order a GPS " +
             "receiver or a phone shows.\n" +
             "Local frame: metres from the aircraft, along the way it faces.",
@@ -706,7 +778,7 @@ Corvus.pluginTrajectory = (function () {
   return {
     init, destroy, start,
     splitFields, parseTrajectory, encodePoints, decodePoints,
-    localToLngLat, toLngLat, pathLength, heightRange, anchorFromState, normalizeSettings,
+    localToLngLat, utmToLngLat, toLngLat, pathLength, heightRange, anchorFromState, normalizeSettings,
     FRAMES, AXES, MAX_POINTS, LINE_KEY,
   };
 })();

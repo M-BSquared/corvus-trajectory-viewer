@@ -211,6 +211,27 @@ function testTheWrongOrderIsNamed() {
   assert.match(tv.toLngLat(metres, "wgs84", null, "frd").error, /Local frame/);
 }
 
+function testUtm32nReadsEastingNorthing() {
+  const res = tv.toLngLat([[696392.85, 5328667.09, 60], [696892.15, 5328724.20, 60]], "epsg32632", null, "frd");
+  assert.equal(res.error, "");
+  assert.ok(Math.abs(res.coords[0][0] - 11.6370) < 1e-6 && Math.abs(res.coords[0][1] - 48.0810) < 1e-6);
+  assert.ok(Math.abs(res.coords[1][0] - 11.6437231) < 1e-6 && Math.abs(res.coords[1][1] - 48.0813593) < 1e-6);
+  const same = tv.toLngLat([[696392.85, 5328667.09, 60]], "epsg25832", null, "frd");
+  assert.deepEqual(same.coords[0], res.coords[0]);
+}
+
+function testUtmCentralMeridianAndZone33() {
+  const c = tv.utmToLngLat(500000, 0, 33, false);
+  assert.ok(Math.abs(c[0] - 15) < 1e-9 && Math.abs(c[1]) < 1e-9);
+}
+
+function testUtmNamesTheWrongFrame() {
+  const utm = [[696392.85, 5328667.09, null], [696892.15, 5328724.2, null]];
+  assert.match(tv.toLngLat(utm, "wgs84", null, "frd").error, /EPSG:32632/);
+  const deg = [[11.5, 48.1, null], [11.6, 48.2, null]];
+  assert.match(tv.toLngLat(deg, "epsg32632", null, "frd").error, /not UTM metres/);
+}
+
 function testTheLocalFrameNeedsAnAnchor() {
   const res = tv.toLngLat([[0, 0, 0], [10, 0, 0]], "local", null, "frd");
   assert.match(res.error, /Anchor the frame/);
@@ -475,6 +496,9 @@ function testRegisteredWithAStartHook() {
 }
 
 const tests = [
+  testUtm32nReadsEastingNorthing,
+  testUtmCentralMeridianAndZone33,
+  testUtmNamesTheWrongFrame,
   testFieldsSplitOnTheUsualSeparators,
   testAFileReadsIntoPoints,
   testLinesThatGoWrongAreCountedWithTheFirstOnesNumber,
