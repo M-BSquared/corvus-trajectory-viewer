@@ -14,48 +14,33 @@ window.Corvus = window.Corvus || {};
  *          longitude, y is latitude, both in degrees (GeoJSON, QGIS).
  *   gps    The order a GPS receiver or a phone shows: latitude first, then
  *          longitude, in degrees.
- *   epsg32632 / epsg25832 / epsg32633
- *          Projected metres, x is easting and y is northing, in UTM zone 32N
- *          (WGS84 or ETRS89, the usual German survey frame) or zone 33N.
+ *   utm    Projected metres (easting, northing) in a selectable UTM zone
+ *          (e.g. 32N / EPSG:32632 / EPSG:25832 or 33N / EPSG:32633).
  *   local  Metres in a frame of the aircraft's own: it is 0, 0, 0, x points
  *          the way its nose points, y to its right (FRD, as PX4 has it, z
  *          down) or to its left (FLU, as ROS has it, z up). The frame is taken
  *          from the aircraft's position and heading when the operator anchors
- *          it, and stays there: a reference that moved with the aircraft
- *          could never show how far the flight is from it.
- *
- * The line is drawn through api.map, which puts it under the flown track, so
- * while the aircraft flies its own path is always the line on top. The colour
- * is one of api.map.colors. z does not change the line (a map line lies on
- * the ground, in 3D as well); its range is shown with the point count.
- *
- * Everything is saved through api.saveSettings: the points (as text), the
- * file name, the frame, the anchor, the colour and whether the line is on the
- * map. start(api) draws a saved line when Corvus starts, so the reference is
- * there before anyone opens the plugin, and closing the plugin leaves it on
- * the map. Removing it is the operator's call, with the switch or Clear.
- *
- * Self-contained like every plugin: this script, its stylesheet
- * (trajectory-viewer.css, every class prefixed tv-), the Corvus.ui components
- * and the plugin api.
+ *          it, and stays there.
  */
 Corvus.pluginTrajectory = (function () {
   const LINE_KEY = "trajectory";
 
-  // Drawn with up to this many points; a longer file is thinned evenly, its
-  // first and last point kept. Far more than a reference needs, and well
-  // inside what the map and the plugin's config file carry comfortably.
   const MAX_POINTS = 50000;
-  // A trajectory, not a point cloud.
   const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
   const FRAMES = [
     { id: "wgs84", label: "WGS84 / EPSG:4326 (longitude, latitude)" },
     { id: "gps", label: "GPS (latitude, longitude)" },
-    { id: "epsg32632", label: "UTM 32N / EPSG:32632 (easting, northing)" },
-    { id: "epsg25832", label: "ETRS89 UTM 32N / EPSG:25832 (easting, northing)" },
-    { id: "epsg32633", label: "UTM 33N / EPSG:32633 (easting, northing)" },
+    { id: "utm", label: "UTM / Projected metres (easting, northing)" },
     { id: "local", label: "Local frame (metres from the aircraft)" },
+  ];
+
+  const UTM_ZONES = [
+    { id: "31N", label: "Zone 31N (West Germany / Benelux / France)", zone: 31, south: false },
+    { id: "32N", label: "Zone 32N / EPSG:32632 / EPSG:25832 (Munich, Central Europe)", zone: 32, south: false },
+    { id: "33N", label: "Zone 33N / EPSG:32633 (Eastern Germany, Austria)", zone: 33, south: false },
+    { id: "34N", label: "Zone 34N (Poland, Eastern Europe)", zone: 34, south: false },
+    { id: "35N", label: "Zone 35N (Finland, Ukraine)", zone: 35, south: false },
   ];
 
   const AXES = [
@@ -67,26 +52,11 @@ Corvus.pluginTrajectory = (function () {
   const WGS84_A = 6378137;
   const WGS84_E2 = 6.69437999014e-3;
 
-  // Projected frames: UTM zone and hemisphere. EPSG:25832 differs from 32632
-  // only in the datum (ETRS89), under a metre from WGS84, so it shares the maths.
-  const UTM = {
-    epsg32632: { zone: 32, south: false },
-    epsg25832: { zone: 32, south: false },
-    epsg32633: { zone: 33, south: false },
-  };
-
   const NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
   const COMMENT_RE = /^(#|\/\/|%)/;
 
   // ---- reading a file ---------------------------------------------------
 
-  /**
-   * One line's fields. A semicolon or a tab is the separator when there is
-   * one, and then a comma is a decimal comma; otherwise commas separate, and
-   * failing that, spaces. A trailing separator leaves no empty last field.
-   *
-   * Pure, and exported for the test suite.
-   */
   function splitFields(line) {
     let fields;
     if (line.indexOf(";") !== -1) {
@@ -102,20 +72,6 @@ Corvus.pluginTrajectory = (function () {
     return fields;
   }
 
-  /**
-   * Read a trajectory file's text into points.
-   *
-   * Returns {points, total, thinned, skipped, firstSkipped, hasZ, error}:
-   * `points` is [[x, y, z|null], ...], `total` how many the file held before
-   * thinning, `skipped` the lines that were neither a point, a comment nor
-   * the header, `firstSkipped` the number of the first of them. `error` is
-   * set, and `points` empty, when there is nothing to draw.
-   *
-   * Pure, and exported for the test suite.
-   *
-   * @param {string} text
-   * @returns {Object}
-   */
   function parseTrajectory(text) {
     const lines = String(text == null ? "" : text).split(/\r\n|\r|\n/);
     let points = [];
@@ -138,8 +94,6 @@ Corvus.pluginTrajectory = (function () {
           return;
         }
       }
-      // The first line that is not a point, before any point, is a header
-      // ("x,y,z", "lon;lat"). Anything after that is a line that went wrong.
       if (!seenData && !numeric && skipped === 0 && points.length === 0) {
         seenData = true;
         return;
@@ -179,13 +133,11 @@ Corvus.pluginTrajectory = (function () {
     };
   }
 
-  /** Points as compact text for the settings file: one "x y z" per line. */
   function encodePoints(points) {
     return (points || []).map((p) => (p[2] === null || p[2] === undefined
       ? `${p[0]} ${p[1]}` : `${p[0]} ${p[1]} ${p[2]}`)).join("\n");
   }
 
-  /** The other way: saved text back to points (empty on anything wrong). */
   function decodePoints(text) {
     if (typeof text !== "string" || !text) return [];
     return parseTrajectory(text).points;
@@ -193,15 +145,6 @@ Corvus.pluginTrajectory = (function () {
 
   // ---- from the file's frame to the map ---------------------------------
 
-  /**
-   * A point of the local frame to [lng, lat]. The frame's origin and heading
-   * are `anchor` {lat, lon, heading}; x is along the heading, y to the right
-   * for FRD and to the left for FLU. Metres become degrees through the
-   * ellipsoid's radii of curvature at the origin, which is exact to well
-   * under a metre over the few kilometres a local frame is used for.
-   *
-   * Pure, and exported for the test suite.
-   */
   function localToLngLat(x, y, anchor, axes) {
     const h = (Number(anchor.heading) || 0) * Math.PI / 180;
     const right = axes === "flu" ? -y : y;
@@ -218,12 +161,6 @@ Corvus.pluginTrajectory = (function () {
     ];
   }
 
-  /**
-   * UTM easting and northing in metres to [lng, lat] (inverse transverse
-   * Mercator, Krueger series, millimetre accuracy inside a zone).
-   *
-   * Pure, and exported for the test suite.
-   */
   function utmToLngLat(easting, northing, zone, south) {
     const k0 = 0.9996;
     const f = 1 - Math.sqrt(1 - WGS84_E2);
@@ -263,18 +200,7 @@ Corvus.pluginTrajectory = (function () {
     return Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
   }
 
-  /**
-   * The points as [lng, lat] pairs for the map, or an error to show.
-   *
-   * Pure, and exported for the test suite.
-   *
-   * @param {Array} points [[x, y, z], ...]
-   * @param {string} frame "wgs84" | "gps" | "local"
-   * @param {Object|null} anchor {lat, lon, heading} for the local frame
-   * @param {string} axes "frd" | "flu"
-   * @returns {{coords: Array, error: string}}
-   */
-  function toLngLat(points, frame, anchor, axes) {
+  function toLngLat(points, frame, anchor, axes, utmZone) {
     const pts = points || [];
     if (frame === "local") {
       if (!anchor || !isFinite(anchor.lat) || !isFinite(anchor.lon)) {
@@ -282,11 +208,10 @@ Corvus.pluginTrajectory = (function () {
       }
       return { coords: pts.map((p) => localToLngLat(p[0], p[1], anchor, axes)), error: "" };
     }
-    if (UTM[frame]) {
-      const { zone, south } = UTM[frame];
-      const out = pts.map((p) => utmToLngLat(p[0], p[1], zone, south));
-      if (out.every((c) => isFinite(c[0]) && isFinite(c[1]) && fitsDegrees(c[0], c[1])
-        && p0InZoneRange(c))) {
+    if (frame === "utm") {
+      const zoneConfig = UTM_ZONES.find((z) => z.id === utmZone) || UTM_ZONES[1];
+      const out = pts.map((p) => utmToLngLat(p[0], p[1], zoneConfig.zone, zoneConfig.south));
+      if (out.every((c) => isFinite(c[0]) && isFinite(c[1]) && fitsDegrees(c[0], c[1]) && p0InZoneRange(c))) {
         return { coords: out, error: "" };
       }
       return {
@@ -306,13 +231,12 @@ Corvus.pluginTrajectory = (function () {
         : "These look like latitude first. Choose GPS.";
     } else if (pts.some((p) => Math.abs(p[0]) > 360 || Math.abs(p[1]) > 360)) {
       error += pts.every((p) => p[0] >= 1e5 && p[0] <= 9e5 && p[1] > 0 && p[1] < 1e7)
-        ? " These look like UTM metres. Choose EPSG:32632 or EPSG:25832 (zone 32), or EPSG:32633 (zone 33)."
+        ? " These look like UTM metres. Choose UTM and select your zone."
         : " Metres from the aircraft go under Local frame.";
     }
     return { coords: [], error };
   }
 
-  /** Length of a [lng, lat] path in metres (equirectangular per segment). */
   function pathLength(coords) {
     let total = 0;
     for (let i = 1; i < coords.length; i++) {
@@ -326,8 +250,6 @@ Corvus.pluginTrajectory = (function () {
     return total;
   }
 
-  /** The height range the file's z gives, in metres up, or null without z.
-   *  FRD's z points down, so its heights are -z. */
   function heightRange(points, frame, axes) {
     let lo = Infinity;
     let hi = -Infinity;
@@ -340,12 +262,6 @@ Corvus.pluginTrajectory = (function () {
     return lo === Infinity ? null : { lo, hi };
   }
 
-  /**
-   * The local frame's anchor from a telemetry sample: the aircraft's position
-   * and heading, or null while there is no real fix to take it from.
-   *
-   * Pure, and exported for the test suite.
-   */
   function anchorFromState(state, now) {
     const s = state || {};
     if (!s.connected || !Array.isArray(s.position)) return null;
@@ -362,12 +278,6 @@ Corvus.pluginTrajectory = (function () {
 
   // ---- saved settings ---------------------------------------------------
 
-  /**
-   * Saved settings, every field checked: a hand-edited or older config file
-   * reads as the defaults rather than as a broken view.
-   *
-   * Pure, and exported for the test suite.
-   */
   function normalizeSettings(raw, colors) {
     const r = raw && typeof raw === "object" ? raw : {};
     const palette = Array.isArray(colors) && colors.length ? colors : [{ id: "cyan" }];
@@ -376,10 +286,22 @@ Corvus.pluginTrajectory = (function () {
       && Math.abs(a.lat) <= 90 && Math.abs(a.lon) <= 180
       ? { lat: Number(a.lat), lon: Number(a.lon), heading: Number(a.heading) || 0, at: Number(a.at) || 0 }
       : null;
+
+    let frame = r.frame;
+    let utmZone = r.utmZone || "32N";
+    if (frame === "epsg32632" || frame === "epsg25832") {
+      frame = "utm";
+      utmZone = "32N";
+    } else if (frame === "epsg32633") {
+      frame = "utm";
+      utmZone = "33N";
+    }
+
     return {
       file: typeof r.file === "string" ? r.file : "",
       points: typeof r.points === "string" ? r.points : "",
-      frame: FRAMES.some((f) => f.id === r.frame) ? r.frame : "wgs84",
+      frame: FRAMES.some((f) => f.id === frame) ? frame : "wgs84",
+      utmZone: UTM_ZONES.some((z) => z.id === utmZone) ? utmZone : "32N",
       axes: AXES.some((x) => x.id === r.axes) ? r.axes : "frd",
       color: palette.some((c) => c.id === r.color) ? r.color : palette[0].id,
       anchor,
@@ -387,26 +309,32 @@ Corvus.pluginTrajectory = (function () {
     };
   }
 
+  // function colorOf(api, id) {
+  //   const colors = (api && api.map && api.map.colors) || [];
+  //   const hit = colors.find((c) => c.id === id) || colors[0];
+  //   return hit ? hit.color : "#2BC4E4";
+  // }
   function colorOf(api, id) {
-    const colors = (api && api.map && api.map.colors) || [];
+    const colors = [
+      { id: "blue",   color: "#0000FF" },
+      { id: "cyan",   color: "#2BC4E4" },
+      { id: "magenta",color: "#E040FB" },
+      { id: "green",  color: "#00E676" },
+      { id: "orange", color: "#FF9100" }
+    ];
     const hit = colors.find((c) => c.id === id) || colors[0];
     return hit ? hit.color : "#2BC4E4";
   }
 
-  /** Draw the saved line; the reason when it cannot be drawn, else "". */
   function drawSaved(api, settings, points) {
     const pts = points || decodePoints(settings.points);
     if (pts.length < 2) return "There is no trajectory to draw. Choose a file first.";
-    const res = toLngLat(pts, settings.frame, settings.anchor, settings.axes);
+    const res = toLngLat(pts, settings.frame, settings.anchor, settings.axes, settings.utmZone);
     if (res.error) return res.error;
-    const ok = api.map.drawLine(LINE_KEY, res.coords, { color: colorOf(api, settings.color), width: 3 });
+    const ok = api.map.drawLine(LINE_KEY, res.coords, { color: colorOf(api, settings.color), width: 4 });
     return ok ? "" : "The map did not take the line.";
   }
 
-  /**
-   * Runs once at start: a line that was on the map when Corvus closed is put
-   * back, so the reference is there before the plugin is ever opened.
-   */
   function start(api) {
     if (!api || !api.map || typeof api.getSettings !== "function") return;
     const settings = normalizeSettings(api.getSettings(), api.map.colors);
@@ -454,7 +382,7 @@ Corvus.pluginTrajectory = (function () {
     let settings = normalizeSettings(
       typeof api.getSettings === "function" ? api.getSettings() : {}, api.map.colors);
     let points = decodePoints(settings.points);
-    let fix = null;   // the anchor the aircraft would give right now
+    let fix = null;
 
     // ---- file (stays on top: everything below works on it) ----
     const fileInput = document.createElement("input");
@@ -484,8 +412,6 @@ Corvus.pluginTrajectory = (function () {
             "Empty lines, a header line such as lon,lat,alt, and lines " +
             "starting with #, // or % are passed over.",
     });
-    // The file and what was read from it are one block, ruled off from the
-    // settings below that work on it.
     const fileBlock = document.createElement("div");
     fileBlock.className = "tv-file";
     fileBlock.appendChild(fileField);
@@ -499,6 +425,24 @@ Corvus.pluginTrajectory = (function () {
       options: FRAMES.map((f) => ({ value: f.id, label: f.label })),
       onChange: (next) => { update({ frame: next }); },
     });
+
+    // UTM Zone choice
+    const utmZoneSelect = ui.select({
+      id: "tvUtmZone",
+      ariaLabel: "UTM Zone",
+      value: settings.utmZone,
+      options: UTM_ZONES.map((z) => ({ value: z.id, label: z.label })),
+      onChange: (next) => { update({ utmZone: next }); },
+    });
+    const utmBox = document.createElement("div");
+    utmBox.className = "tv-sub-section tv-utm";
+    utmBox.appendChild(ui.field({
+      label: "Zone",
+      control: utmZoneSelect,
+      info: "UTM zone covering your survey area.\nZone 32N covers Munich and Western Germany; Zone 33N covers Eastern Germany.",
+    }));
+
+    // Local frame choice
     const axesSelect = ui.select({
       id: "tvAxes",
       ariaLabel: "Axes of the local frame",
@@ -516,7 +460,7 @@ Corvus.pluginTrajectory = (function () {
       },
     });
     const localBox = document.createElement("div");
-    localBox.className = "tv-local";
+    localBox.className = "tv-sub-section tv-local";
     localBox.appendChild(ui.field({
       label: "Axes",
       control: axesSelect,
@@ -534,7 +478,17 @@ Corvus.pluginTrajectory = (function () {
     swatches.className = "tv-swatches";
     swatches.setAttribute("role", "radiogroup");
     swatches.setAttribute("aria-label", "Line colour");
-    const swatchEls = api.map.colors.map((c) => {
+    // const swatchEls = api.map.colors.map((c) => {
+      // Eigene Farbpalette:
+    const myColors = [
+      { id: "blue",   label: "Blue",   color: "#0000FF" },
+      { id: "cyan",   label: "Cyan",   color: "#2BC4E4" },
+      { id: "magenta",label: "Pink",   color: "#E040FB" },
+      { id: "green",  label: "Grün",   color: "#00E676" },
+      { id: "orange", label: "Orange", color: "#FF9100" }
+    ];
+
+    const swatchEls = myColors.map((c) => {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "tv-swatch";
@@ -560,8 +514,6 @@ Corvus.pluginTrajectory = (function () {
           return undefined;
         }
         let anchor = settings.anchor;
-        // A local frame with no anchor yet takes the aircraft as it is now,
-        // which is what turning the line on means for a frame of the aircraft.
         if (settings.frame === "local" && !anchor && fix) anchor = fix;
         const why = drawSaved(api, Object.assign({}, settings, { anchor }), points);
         if (why) {
@@ -580,7 +532,7 @@ Corvus.pluginTrajectory = (function () {
       variant: "secondary", icon: "scan", label: "Show me",
       title: "Frame the trajectory on the Home map",
       onClick: () => {
-        const res = toLngLat(points, settings.frame, settings.anchor, settings.axes);
+        const res = toLngLat(points, settings.frame, settings.anchor, settings.axes, settings.utmZone);
         if (res.error) { status.show(res.error, "err"); return; }
         api.map.fit(res.coords);
       },
@@ -609,12 +561,12 @@ Corvus.pluginTrajectory = (function () {
       info: "What the numbers in the file mean. A file does not say, so you choose.\n" +
             "WGS84 / EPSG:4326: degrees, x is longitude and y is latitude, the " +
             "order GIS tools write (GeoJSON, QGIS).\n" +
-            "UTM / EPSG:32632, 25832, 32633: metres, x is easting and y is " +
-            "northing (zone 32N covers Munich, 33N the east of Bavaria).\n" +
+            "UTM: metres, x is easting and y is northing with selectable zone (zone 32N covers Munich).\n" +
             "GPS: degrees, latitude first, then longitude, the order a GPS " +
             "receiver or a phone shows.\n" +
             "Local frame: metres from the aircraft, along the way it faces.",
     }));
+    lineCard.appendChild(utmBox);
     lineCard.appendChild(localBox);
     lineCard.appendChild(ui.field({ label: "Colour", control: swatches }));
     lineCard.appendChild(ui.field({
@@ -646,11 +598,8 @@ Corvus.pluginTrajectory = (function () {
       });
     }
 
-    /** A setting changed: save it, and redraw a line that is on the map. */
     function update(patch, isAnchor) {
       if (Object.keys(patch).length) save(patch);
-      // A line on the map moved into a local frame that has no anchor yet
-      // takes the aircraft as it is now, as turning the line on does.
       if (settings.drawn && settings.frame === "local" && !settings.anchor && fix) {
         save({ anchor: fix });
       }
@@ -676,15 +625,13 @@ Corvus.pluginTrajectory = (function () {
         return;
       }
       const parts = [`${points.length} point${points.length === 1 ? "" : "s"}`];
-      const res = toLngLat(points, settings.frame, settings.anchor, settings.axes);
+      const res = toLngLat(points, settings.frame, settings.anchor, settings.axes, settings.utmZone);
       if (!res.error) parts.push(`${formatDistance(pathLength(res.coords))} long`);
       const heights = heightRange(points, settings.frame, settings.axes);
       if (heights) parts.push(`heights ${formatLength(heights.lo)} to ${formatLength(heights.hi)}`);
       summary.show(parts.join(", ") + ".", "");
     }
 
-    /** A select set from code: the themed dropdown over it follows a
-     *  "change" or a DOM mutation only, so it is told to look again. */
     function setSelect(sel, value) {
       if (sel.value !== value) sel.value = value;
       if (sel.corvusSelect && typeof sel.corvusSelect.refresh === "function") sel.corvusSelect.refresh();
@@ -693,8 +640,10 @@ Corvus.pluginTrajectory = (function () {
     function paint() {
       fileName.textContent = settings.file || "No file chosen";
       fileName.title = fileName.textContent;
+      utmBox.hidden = settings.frame !== "utm";
       localBox.hidden = settings.frame !== "local";
       setSelect(frameSelect, settings.frame);
+      setSelect(utmZoneSelect, settings.utmZone);
       setSelect(axesSelect, settings.axes);
       anchorText.textContent = formatAnchor(settings.anchor);
       anchorBtn.disabled = !fix;
@@ -742,7 +691,6 @@ Corvus.pluginTrajectory = (function () {
         save({ file: file.name, points: encodePoints(points) });
         if (notes.length) status.show(notes.join(" "), "warn");
         else status.hide();
-        // A new file on a line that is already showing replaces it at once.
         if (settings.drawn) update({});
         else paint();
       }).catch((err) => {
@@ -752,7 +700,6 @@ Corvus.pluginTrajectory = (function () {
       });
     });
 
-    // Whether the aircraft could anchor the frame right now.
     const unsubscribe = typeof api.subscribe === "function"
       ? api.subscribe((state) => {
         const next = anchorFromState(state);
@@ -770,7 +717,6 @@ Corvus.pluginTrajectory = (function () {
     };
   }
 
-  /** Tear down the view. The line stays on the map: that is the point of it. */
   function destroy(containerEl) {
     if (containerEl && typeof containerEl._tvDestroy === "function") containerEl._tvDestroy();
   }
@@ -779,11 +725,10 @@ Corvus.pluginTrajectory = (function () {
     init, destroy, start,
     splitFields, parseTrajectory, encodePoints, decodePoints,
     localToLngLat, utmToLngLat, toLngLat, pathLength, heightRange, anchorFromState, normalizeSettings,
-    FRAMES, AXES, MAX_POINTS, LINE_KEY,
+    FRAMES, UTM_ZONES, AXES, MAX_POINTS, LINE_KEY,
   };
 })();
 
-// Registered as this script runs; the grid re-renders on every register().
 if (window.Corvus && Corvus.plugins && typeof Corvus.plugins.register === "function") {
   Corvus.plugins.register("trajectory-viewer", {
     name: "Trajectory Viewer",
