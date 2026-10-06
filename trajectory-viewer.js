@@ -43,6 +43,16 @@ Corvus.pluginTrajectory = (function () {
     { id: "35N", label: "Zone 35N (Finland, Ukraine)", zone: 35, south: false },
   ];
 
+  const COLORS = [
+    { id: "blue", label: "Blue", color: "#0000FF" },
+    { id: "cyan", label: "Cyan", color: "#2BC4E4" },
+    { id: "magenta", label: "Pink", color: "#E040FB" },
+    { id: "green", label: "Green", color: "#00E676" },
+    { id: "orange", label: "Orange", color: "#FF9100" },
+  ];
+
+  const DEFAULT_COLOR = "cyan";
+
   const AXES = [
     { id: "frd", label: "y to the right (FRD, PX4)" },
     { id: "flu", label: "y to the left (FLU, ROS)" },
@@ -211,7 +221,8 @@ Corvus.pluginTrajectory = (function () {
     if (frame === "utm") {
       const zoneConfig = UTM_ZONES.find((z) => z.id === utmZone) || UTM_ZONES[1];
       const out = pts.map((p) => utmToLngLat(p[0], p[1], zoneConfig.zone, zoneConfig.south));
-      if (out.every((c) => isFinite(c[0]) && isFinite(c[1]) && fitsDegrees(c[0], c[1]) && p0InZoneRange(c))) {
+      const plausible = pts.every((p) => p[0] >= 1e5 && p[0] <= 9e5 && Math.abs(p[1]) <= 1e7);
+      if (plausible && out.every((c) => isFinite(c[0]) && isFinite(c[1]) && fitsDegrees(c[0], c[1]) && p0InZoneRange(c))) {
         return { coords: out, error: "" };
       }
       return {
@@ -276,11 +287,109 @@ Corvus.pluginTrajectory = (function () {
     };
   }
 
+  // ---- the flown track and the comparison -------------------------------
+
+  // Samples [lng, lat, altitude AMSL] of the aircraft while it is armed, kept
+  // in memory for this session (the map's own track has no heights).
+  const FLOWN_MAX = 20000;
+  const FLOWN_MIN_STEP_M = 1;
+  const flown = [];
+  let recording = false;
+
+  function metresBetween(a, b) {
+    const midLat = ((a[1] + b[1]) / 2) * Math.PI / 180;
+    const dx = (b[0] - a[0]) * Math.PI / 180 * Math.cos(midLat) * WGS84_A;
+    const dy = (b[1] - a[1]) * Math.PI / 180 * WGS84_A;
+    return Math.hypot(dx, dy);
+  }
+
+  /**
+   * Add the aircraft's position to `buf` when it is armed, has a fix and has
+   * moved a metre since the last sample. True when a sample was added.
+   *
+   * Pure apart from `buf`, and exported for the test suite.
+   */
+  function recordFlown(buf, state) {
+    const s = state || {};
+    if (!s.connected || !s.armed || !Array.isArray(s.position)) return false;
+    const lon = Number(s.position[0]);
+    const lat = Number(s.position[1]);
+    if (!isFinite(lon) || !isFinite(lat) || (lon === 0 && lat === 0)) return false;
+    const alt = Number(s.altitude_amsl);
+    const sample = [lon, lat, isFinite(alt) ? alt : 0];
+    const last = buf[buf.length - 1];
+    if (last && metresBetween(last, sample) < FLOWN_MIN_STEP_M && Math.abs(last[2] - sample[2]) < FLOWN_MIN_STEP_M) {
+      return false;
+    }
+    buf.push(sample);
+    if (buf.length > FLOWN_MAX) buf.splice(0, buf.length - FLOWN_MAX);
+    return true;
+  }
+
+  function startRecording(api) {
+    if (recording || !api || typeof api.subscribe !== "function") return;
+    recording = true;
+    api.subscribe((state) => { recordFlown(flown, state); });
+  }
+
+  /**
+   * Both tracks as east/north/up metres around the reference's first point.
+   * Heights are above each track's own start: the reference's z as the file
+   * has it (negated for the FRD local frame), the flown track's altitude minus
+   * its first sample's. A file does not say what its z is measured from, so
+   * this is the one reading that compares them without a guess.
+   *
+   * Pure, and exported for the test suite.
+   *
+   * @param {Array} coords reference [[lng, lat], ...]
+   * @param {Array} heights reference height per point, or null
+   * @param {Array} track flown [[lng, lat, alt], ...]
+   * @returns {{ref: Array, flown: Array}} [[east, north, up], ...] each
+   */
+  function buildComparison(coords, heights, track) {
+    if (!coords.length) return { ref: [], flown: [] };
+    const lng0 = coords[0][0];
+    const lat0 = coords[0][1];
+    const k = Math.PI / 180 * WGS84_A;
+    const cosPhi = Math.cos(lat0 * Math.PI / 180);
+    const enu = (c, up) => [(c[0] - lng0) * k * cosPhi, (c[1] - lat0) * k, up];
+    const ref = coords.map((c, i) => enu(c, heights && isFinite(heights[i]) ? heights[i] : 0));
+    const base = track.length ? track[0][2] : 0;
+    return { ref, flown: track.map((c) => enu(c, c[2] - base)) };
+  }
+
+  function distToSegment(p, a, b) {
+    const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let t = len2 ? ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p[0] - a[0] - t * ab[0], p[1] - a[1] - t * ab[1], p[2] - a[2] - t * ab[2]);
+  }
+
+  /**
+   * How far the flown points lie from the reference line, in metres:
+   * {max, mean}, or null when either track is too short.
+   *
+   * Pure, and exported for the test suite.
+   */
+  function deviation(ref, track) {
+    if (ref.length < 2 || !track.length) return null;
+    let max = 0;
+    let sum = 0;
+    track.forEach((p) => {
+      let d = Infinity;
+      for (let i = 1; i < ref.length; i++) d = Math.min(d, distToSegment(p, ref[i - 1], ref[i]));
+      max = Math.max(max, d);
+      sum += d;
+    });
+    return { max, mean: sum / track.length };
+  }
+
   // ---- saved settings ---------------------------------------------------
 
   function normalizeSettings(raw, colors) {
     const r = raw && typeof raw === "object" ? raw : {};
-    const palette = Array.isArray(colors) && colors.length ? colors : [{ id: "cyan" }];
+    const palette = COLORS;
     const a = r.anchor;
     const anchor = a && typeof a === "object" && isFinite(a.lat) && isFinite(a.lon)
       && Math.abs(a.lat) <= 90 && Math.abs(a.lon) <= 180
@@ -303,27 +412,15 @@ Corvus.pluginTrajectory = (function () {
       frame: FRAMES.some((f) => f.id === frame) ? frame : "wgs84",
       utmZone: UTM_ZONES.some((z) => z.id === utmZone) ? utmZone : "32N",
       axes: AXES.some((x) => x.id === r.axes) ? r.axes : "frd",
-      color: palette.some((c) => c.id === r.color) ? r.color : palette[0].id,
+      color: palette.some((c) => c.id === r.color) ? r.color : DEFAULT_COLOR,
       anchor,
       drawn: r.drawn === true,
     };
   }
 
-  // function colorOf(api, id) {
-  //   const colors = (api && api.map && api.map.colors) || [];
-  //   const hit = colors.find((c) => c.id === id) || colors[0];
-  //   return hit ? hit.color : "#2BC4E4";
-  // }
   function colorOf(api, id) {
-    const colors = [
-      { id: "blue",   color: "#0000FF" },
-      { id: "cyan",   color: "#2BC4E4" },
-      { id: "magenta",color: "#E040FB" },
-      { id: "green",  color: "#00E676" },
-      { id: "orange", color: "#FF9100" }
-    ];
-    const hit = colors.find((c) => c.id === id) || colors[0];
-    return hit ? hit.color : "#2BC4E4";
+    const hit = COLORS.find((c) => c.id === id) || COLORS[0];
+    return hit.color;
   }
 
   function drawSaved(api, settings, points) {
@@ -337,6 +434,7 @@ Corvus.pluginTrajectory = (function () {
 
   function start(api) {
     if (!api || !api.map || typeof api.getSettings !== "function") return;
+    startRecording(api);
     const settings = normalizeSettings(api.getSettings(), api.map.colors);
     if (settings.drawn) drawSaved(api, settings);
   }
@@ -478,17 +576,7 @@ Corvus.pluginTrajectory = (function () {
     swatches.className = "tv-swatches";
     swatches.setAttribute("role", "radiogroup");
     swatches.setAttribute("aria-label", "Line colour");
-    // const swatchEls = api.map.colors.map((c) => {
-      // Eigene Farbpalette:
-    const myColors = [
-      { id: "blue",   label: "Blue",   color: "#0000FF" },
-      { id: "cyan",   label: "Cyan",   color: "#2BC4E4" },
-      { id: "magenta",label: "Pink",   color: "#E040FB" },
-      { id: "green",  label: "Grün",   color: "#00E676" },
-      { id: "orange", label: "Orange", color: "#FF9100" }
-    ];
-
-    const swatchEls = myColors.map((c) => {
+    const swatchEls = COLORS.map((c) => {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "tv-swatch";
@@ -551,6 +639,75 @@ Corvus.pluginTrajectory = (function () {
     });
     const status = ui.message({ className: "tv-status" });
 
+    function showComparison() {
+      const res = toLngLat(points, settings.frame, settings.anchor, settings.axes, settings.utmZone);
+      if (res.error) { status.show(res.error, "err"); return; }
+      if (res.coords.length < 2) { status.show("There is no trajectory to compare. Choose a file first.", "warn"); return; }
+      if (flown.length < 2) {
+        status.show("There is no flown track yet. It is recorded while the aircraft is armed.", "warn");
+        return;
+      }
+      const heights = points.map((p) => (p[2] === null || p[2] === undefined ? 0
+        : (settings.frame === "local" && settings.axes !== "flu" ? -p[2] : p[2])));
+      const cmp = buildComparison(res.coords, heights, flown);
+      const dev = deviation(cmp.ref, cmp.flown);
+      const host = document.createElement("div");
+      host.className = "tv-plot";
+      const info = document.createElement("p");
+      info.className = "tv-plot-info";
+      info.textContent = dev
+        ? `Largest distance from the trajectory ${formatLength(dev.max)}, on average ${formatLength(dev.mean)}. ` +
+          "Heights are above each track's start."
+        : "";
+      const body = document.createElement("div");
+      body.appendChild(host);
+      body.appendChild(info);
+      const clearFlown = ui.button({
+        variant: "secondary", icon: "trash-2", label: "Clear flown track",
+        onClick: () => { flown.length = 0; dlg.close(); },
+      });
+      const dlg = ui.modal({
+        title: "Trajectory and flown track",
+        body, size: "lg", actions: clearFlown,
+        onClose: () => {
+          if (window.Plotly && host.isConnected !== false) { try { window.Plotly.purge(host); } catch (e) { /* gone */ } }
+        },
+      });
+      dlg.open();
+      const lazy = Corvus.lazy;
+      const ready = window.Plotly ? Promise.resolve(window.Plotly)
+        : (lazy && typeof lazy.plotly === "function" ? lazy.plotly() : Promise.reject(new Error("Plotly is not available.")));
+      ready.then((Plotly) => {
+        const theme = ui.plotlyTheme ? ui.plotlyTheme() : {};
+        const axis = (title) => Object.assign({}, theme.xaxis || {}, { title });
+        const trace = (name, pts, color, dash) => ({
+          type: "scatter3d", mode: "lines", name,
+          x: pts.map((p) => p[0]), y: pts.map((p) => p[1]), z: pts.map((p) => p[2]),
+          line: { color, width: 5, dash },
+        });
+        const layout = {
+          paper_bgcolor: theme.paper_bgcolor, plot_bgcolor: theme.plot_bgcolor, font: theme.font,
+          margin: { l: 0, r: 0, t: 0, b: 0 },
+          legend: { orientation: "h" },
+          scene: {
+            aspectmode: "data",
+            xaxis: axis("East (m)"), yaxis: axis("North (m)"), zaxis: axis("Height (m)"),
+          },
+        };
+        Plotly.newPlot(host, [
+          trace("Trajectory", cmp.ref, colorOf(api, settings.color), "solid"),
+          trace("Flown", cmp.flown, "#FF3B30", "solid"),
+        ], layout, { displayModeBar: false, responsive: true });
+      }).catch((err) => {
+        host.textContent = (err && err.message) || "The plot could not be drawn.";
+      });
+    }
+    const compareBtn = ui.button({
+      variant: "secondary", icon: "box", label: "Compare in 3D",
+      title: "Plot the trajectory and the flown track in 3D",
+      onClick: showComparison,
+    });
+
     // One card: the file on top, since everything below works on it.
     const lineCard = ui.card({});
     lineCard.classList.add("tv-card");
@@ -581,6 +738,7 @@ Corvus.pluginTrajectory = (function () {
     const actions = document.createElement("div");
     actions.className = "tv-actions";
     actions.appendChild(fitBtn);
+    actions.appendChild(compareBtn);
     actions.appendChild(clearBtn);
     lineCard.appendChild(actions);
     lineCard.appendChild(status.el);
@@ -700,6 +858,7 @@ Corvus.pluginTrajectory = (function () {
       });
     });
 
+    startRecording(api);
     const unsubscribe = typeof api.subscribe === "function"
       ? api.subscribe((state) => {
         const next = anchorFromState(state);
@@ -724,8 +883,8 @@ Corvus.pluginTrajectory = (function () {
   return {
     init, destroy, start,
     splitFields, parseTrajectory, encodePoints, decodePoints,
-    localToLngLat, utmToLngLat, toLngLat, pathLength, heightRange, anchorFromState, normalizeSettings,
-    FRAMES, UTM_ZONES, AXES, MAX_POINTS, LINE_KEY,
+    localToLngLat, utmToLngLat, recordFlown, buildComparison, deviation, flown, toLngLat, pathLength, heightRange, anchorFromState, normalizeSettings,
+    FRAMES, UTM_ZONES, COLORS, AXES, MAX_POINTS, LINE_KEY,
   };
 })();
 

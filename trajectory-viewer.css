@@ -93,3 +93,6 @@
   .tv-swatch { transition: none; }
   .tv-swatch:hover { transform: none; }
 }
+
+.tv-plot { width: 100%; height: 60vh; min-height: 320px; }
+.tv-plot-info { margin: 8px 0 0; font-size: 12px; opacity: 0.8; }

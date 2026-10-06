@@ -212,12 +212,14 @@ function testTheWrongOrderIsNamed() {
 }
 
 function testUtm32nReadsEastingNorthing() {
-  const res = tv.toLngLat([[696392.85, 5328667.09, 60], [696892.15, 5328724.20, 60]], "epsg32632", null, "frd");
+  const res = tv.toLngLat([[696392.85, 5328667.09, 60], [696892.15, 5328724.20, 60]], "utm", null, "frd", "32N");
   assert.equal(res.error, "");
   assert.ok(Math.abs(res.coords[0][0] - 11.6370) < 1e-6 && Math.abs(res.coords[0][1] - 48.0810) < 1e-6);
   assert.ok(Math.abs(res.coords[1][0] - 11.6437231) < 1e-6 && Math.abs(res.coords[1][1] - 48.0813593) < 1e-6);
-  const same = tv.toLngLat([[696392.85, 5328667.09, 60]], "epsg25832", null, "frd");
-  assert.deepEqual(same.coords[0], res.coords[0]);
+  const old = tv.normalizeSettings({ frame: "epsg25832" }, [{ id: "cyan" }]);
+  assert.equal(old.frame, "utm");
+  assert.equal(old.utmZone, "32N");
+  assert.equal(tv.normalizeSettings({ frame: "epsg32633" }, [{ id: "cyan" }]).utmZone, "33N");
 }
 
 function testUtmCentralMeridianAndZone33() {
@@ -227,9 +229,40 @@ function testUtmCentralMeridianAndZone33() {
 
 function testUtmNamesTheWrongFrame() {
   const utm = [[696392.85, 5328667.09, null], [696892.15, 5328724.2, null]];
-  assert.match(tv.toLngLat(utm, "wgs84", null, "frd").error, /EPSG:32632/);
+  assert.match(tv.toLngLat(utm, "wgs84", null, "frd").error, /UTM metres/);
   const deg = [[11.5, 48.1, null], [11.6, 48.2, null]];
-  assert.match(tv.toLngLat(deg, "epsg32632", null, "frd").error, /not UTM metres/);
+  assert.match(tv.toLngLat(deg, "utm", null, "frd", "32N").error, /not UTM metres/);
+}
+
+function testTheFlownTrackIsRecordedWhileArmed() {
+  const buf = [];
+  const at = (lon, lat, alt, armed) => ({ connected: true, armed, position: [lon, lat], altitude_amsl: alt });
+  assert.equal(tv.recordFlown(buf, at(11, 48, 500, false)), false, "not armed");
+  assert.equal(tv.recordFlown(buf, { connected: true, armed: true, position: [0, 0] }), false, "no fix");
+  assert.equal(tv.recordFlown(buf, at(11, 48, 500, true)), true);
+  assert.equal(tv.recordFlown(buf, at(11, 48, 500, true)), false, "has not moved");
+  assert.equal(tv.recordFlown(buf, at(11.001, 48, 510, true)), true);
+  assert.deepEqual(buf, [[11, 48, 500], [11.001, 48, 510]]);
+}
+
+function testTheComparisonIsInMetresAboveEachStart() {
+  const cmp = tv.buildComparison([[11, 48], [11.001, 48]], [60, 60], [[11, 48, 500], [11, 48.001, 530]]);
+  assert.equal(cmp.ref[0][0], 0);
+  assert.ok(Math.abs(cmp.ref[1][0] - 74.5) < 1, "0.001 degrees of longitude at 48N is about 74 m");
+  assert.equal(cmp.ref[1][2], 60);
+  assert.equal(cmp.flown[0][2], 0, "flown heights start at 0");
+  assert.equal(cmp.flown[1][2], 30);
+  assert.ok(Math.abs(cmp.flown[1][1] - 111.3) < 1);
+  assert.deepEqual(tv.buildComparison([], null, []), { ref: [], flown: [] });
+}
+
+function testTheDeviationIsTheDistanceToTheLine() {
+  const ref = [[0, 0, 0], [100, 0, 0]];
+  const d = tv.deviation(ref, [[50, 3, 0], [50, 0, 4], [150, 0, 0]]);
+  assert.equal(d.max, 50, "past the end counts from the end point");
+  assert.ok(Math.abs(d.mean - (3 + 4 + 50) / 3) < 1e-9);
+  assert.equal(tv.deviation([[0, 0, 0]], [[1, 1, 1]]), null);
+  assert.equal(tv.deviation(ref, []), null);
 }
 
 function testTheLocalFrameNeedsAnAnchor() {
@@ -279,20 +312,20 @@ function testTheAnchorIsTheAircraftWithARealFix() {
 }
 
 function testSavedSettingsAreChecked() {
-  const colors = [{ id: "cyan" }, { id: "lime" }];
+  const colors = [{ id: "cyan" }];
   const s = tv.normalizeSettings({
-    frame: "utm", axes: "nwu", color: "red", drawn: "yes",
+    frame: "mgrs", axes: "nwu", color: "red", drawn: "yes",
     anchor: { lat: 95, lon: 11 }, points: 5,
   }, colors);
   assert.deepEqual(s, {
-    file: "", points: "", frame: "wgs84", axes: "frd", color: "cyan", anchor: null, drawn: false,
+    file: "", points: "", frame: "wgs84", utmZone: "32N", axes: "frd", color: "cyan", anchor: null, drawn: false,
   });
   const ok = tv.normalizeSettings({
-    frame: "local", axes: "flu", color: "lime", drawn: true, file: "a.csv",
+    frame: "local", axes: "flu", color: "orange", drawn: true, file: "a.csv",
     anchor: { lat: 48, lon: 11, heading: 45, at: 9 }, points: "1 2\n3 4",
   }, colors);
   assert.equal(ok.frame, "local");
-  assert.equal(ok.color, "lime");
+  assert.equal(ok.color, "orange");
   assert.deepEqual(ok.anchor, { lat: 48, lon: 11, heading: 45, at: 9 });
 }
 
@@ -327,14 +360,14 @@ function fakeApi(saved, state) {
   };
 }
 
-const SAVED_LINE = { file: "route.csv", points: "11 48\n11.01 48.01", frame: "wgs84", color: "lime", drawn: true };
+const SAVED_LINE = { file: "route.csv", points: "11 48\n11.01 48.01", frame: "wgs84", color: "green", drawn: true };
 
 function testStartPutsASavedLineBack() {
   const api = fakeApi(SAVED_LINE);
   tv.start(api);
   assert.ok(api.drawn[tv.LINE_KEY], "drawn at start, without the plugin being opened");
   assert.deepEqual(api.drawn[tv.LINE_KEY].coords, [[11, 48], [11.01, 48.01]]);
-  assert.equal(api.drawn[tv.LINE_KEY].opts.color, "#7BD389", "in the saved colour");
+  assert.equal(api.drawn[tv.LINE_KEY].opts.color, "#00E676", "in the saved colour");
 
   const off = fakeApi(Object.assign({}, SAVED_LINE, { drawn: false }));
   tv.start(off);
@@ -377,7 +410,7 @@ async function testTheFrameIsADropdownThatRedrawsTheLine() {
   const selects = all(container, "select");
   const frame = selects.find((s) => s.id === "tvFrame");
   assert.ok(frame, "the coordinates are a dropdown");
-  assert.deepEqual(frame.children.map((o) => o.value), ["wgs84", "gps", "local"]);
+  assert.deepEqual(frame.children.map((o) => o.value), ["wgs84", "gps", "utm", "local"]);
   assert.equal(frame.value, "wgs84");
   const local = all(container, ".tv-local")[0];
   assert.equal(local.hidden, true, "the axes are only there for the local frame");
@@ -496,6 +529,9 @@ function testRegisteredWithAStartHook() {
 }
 
 const tests = [
+  testTheFlownTrackIsRecordedWhileArmed,
+  testTheComparisonIsInMetresAboveEachStart,
+  testTheDeviationIsTheDistanceToTheLine,
   testUtm32nReadsEastingNorthing,
   testUtmCentralMeridianAndZone33,
   testUtmNamesTheWrongFrame,
