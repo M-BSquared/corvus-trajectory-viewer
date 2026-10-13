@@ -65,6 +65,15 @@ Corvus.pluginTrajectory = (function () {
   const NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
   const COMMENT_RE = /^(#|\/\/|%)/;
 
+  // Corvus ships plotly-basic, which has no scatter3d. The plugin carries
+  // Plotly's gl3d bundle of the same version and loads it on first use.
+  const PLOTLY_3D = "vendor/plotly-gl3d.min.js";
+  const VIEW_HINT = "Drag to turn, scroll to zoom, right drag to move. The toolbar at the top right resets the view.";
+  const ASSET_BASE = (function () {
+    const src = typeof document !== "undefined" && document.currentScript && document.currentScript.src;
+    return src ? String(src).replace(/[^/]*$/, "") : "/api/plugins/asset/trajectory-viewer/";
+  })();
+
   // ---- reading a file ---------------------------------------------------
 
   function splitFields(line) {
@@ -385,6 +394,44 @@ Corvus.pluginTrajectory = (function () {
     return { max, mean: sum / track.length };
   }
 
+  // ---- the 3D plot library ----------------------------------------------
+
+  let plotly3d = null;
+
+  /**
+   * Plotly with scatter3d, loaded once. The bundle assigns window.Plotly as
+   * it runs; the app's plotly-basic is put back afterwards, because Analysis
+   * and Tuning draw bars and pies the gl3d bundle does not have. plotly-basic
+   * is loaded first so it cannot land between the two and be overwritten.
+   */
+  function loadPlotly3d() {
+    if (plotly3d) return plotly3d;
+    const lazy = window.Corvus && Corvus.lazy;
+    const basic = lazy && typeof lazy.plotly === "function"
+      ? lazy.plotly().catch(() => null) : Promise.resolve(null);
+    const p = basic.then(() => new Promise((resolve, reject) => {
+      const prev = window.Plotly;
+      const el = document.createElement("script");
+      el.src = ASSET_BASE + PLOTLY_3D;
+      el.async = false;
+      el.addEventListener("load", () => {
+        const mine = window.Plotly;
+        if (prev) window.Plotly = prev;
+        else delete window.Plotly;
+        if (mine && mine !== prev && typeof mine.newPlot === "function") resolve(mine);
+        else reject(new Error("The 3D plot library did not load."));
+      });
+      el.addEventListener("error", () => {
+        el.remove();
+        reject(new Error("The 3D plot library could not be loaded."));
+      });
+      document.head.appendChild(el);
+    }));
+    plotly3d = p;
+    p.catch(() => { if (plotly3d === p) plotly3d = null; });
+    return p;
+  }
+
   // ---- saved settings ---------------------------------------------------
 
   function normalizeSettings(raw, colors) {
@@ -642,63 +689,98 @@ Corvus.pluginTrajectory = (function () {
     function showComparison() {
       const res = toLngLat(points, settings.frame, settings.anchor, settings.axes, settings.utmZone);
       if (res.error) { status.show(res.error, "err"); return; }
-      if (res.coords.length < 2) { status.show("There is no trajectory to compare. Choose a file first.", "warn"); return; }
-      if (flown.length < 2) {
-        status.show("There is no flown track yet. It is recorded while the aircraft is armed.", "warn");
-        return;
-      }
+      if (res.coords.length < 2) { status.show("There is no trajectory to plot. Choose a file first.", "warn"); return; }
+      status.hide();
       const heights = points.map((p) => (p[2] === null || p[2] === undefined ? 0
         : (settings.frame === "local" && settings.axes !== "flu" ? -p[2] : p[2])));
       const cmp = buildComparison(res.coords, heights, flown);
-      const dev = deviation(cmp.ref, cmp.flown);
+      const hasFlown = cmp.flown.length >= 2;
+      const dev = hasFlown ? deviation(cmp.ref, cmp.flown) : null;
       const host = document.createElement("div");
       host.className = "tv-plot";
+      host.textContent = "Loading the 3D plot…";
       const info = document.createElement("p");
       info.className = "tv-plot-info";
-      info.textContent = dev
-        ? `Largest distance from the trajectory ${formatLength(dev.max)}, on average ${formatLength(dev.mean)}. ` +
-          "Heights are above each track's start."
-        : "";
+      if (dev) {
+        info.textContent = `Largest distance from the trajectory ${formatLength(dev.max)}, ` +
+          `on average ${formatLength(dev.mean)}. Heights are above each track's start. ${VIEW_HINT}`;
+      } else {
+        info.textContent = "No flown track yet. It is recorded while the aircraft is armed " +
+          `and then drawn here next to the trajectory. ${VIEW_HINT}`;
+      }
       const body = document.createElement("div");
       body.appendChild(host);
       body.appendChild(info);
-      const clearFlown = ui.button({
+      let shown = null;
+      let closed = false;
+      let observer = null;
+      const clearFlown = hasFlown ? ui.button({
         variant: "secondary", icon: "trash-2", label: "Clear flown track",
         onClick: () => { flown.length = 0; dlg.close(); },
-      });
+      }) : null;
       const dlg = ui.modal({
-        title: "Trajectory and flown track",
+        title: hasFlown ? "Trajectory and flown track" : "Trajectory",
         body, size: "lg", actions: clearFlown,
         onClose: () => {
-          if (window.Plotly && host.isConnected !== false) { try { window.Plotly.purge(host); } catch (e) { /* gone */ } }
+          closed = true;
+          if (observer) { observer.disconnect(); observer = null; }
+          if (shown) { try { shown.purge(host); } catch (e) { /* gone */ } }
         },
       });
       dlg.open();
-      const lazy = Corvus.lazy;
-      const ready = window.Plotly ? Promise.resolve(window.Plotly)
-        : (lazy && typeof lazy.plotly === "function" ? lazy.plotly() : Promise.reject(new Error("Plotly is not available.")));
-      ready.then((Plotly) => {
+      loadPlotly3d().then((Plotly) => {
+        if (closed || cancelled) return;
         const theme = ui.plotlyTheme ? ui.plotlyTheme() : {};
-        const axis = (title) => Object.assign({}, theme.xaxis || {}, { title });
-        const trace = (name, pts, color, dash) => ({
+        const base = theme.xaxis || {};
+        const axis = (title) => ({
+          title, gridcolor: base.gridcolor, zerolinecolor: base.zerolinecolor,
+          linecolor: base.linecolor, tickfont: base.tickfont,
+          showbackground: false,
+        });
+        const trace = (name, pts, color) => ({
           type: "scatter3d", mode: "lines", name,
           x: pts.map((p) => p[0]), y: pts.map((p) => p[1]), z: pts.map((p) => p[2]),
-          line: { color, width: 5, dash },
+          line: { color, width: 5 },
+          hovertemplate: "East %{x:.1f} m<br>North %{y:.1f} m<br>Height %{z:.1f} m<extra>" + name + "</extra>",
         });
+        const ends = (pts, color) => ({
+          type: "scatter3d", mode: "markers", showlegend: false, hoverinfo: "skip",
+          x: [pts[0][0], pts[pts.length - 1][0]],
+          y: [pts[0][1], pts[pts.length - 1][1]],
+          z: [pts[0][2], pts[pts.length - 1][2]],
+          marker: { size: [5, 3], color, symbol: ["circle", "diamond"] },
+        });
+        const refColor = colorOf(api, settings.color);
+        const traces = [trace("Trajectory", cmp.ref, refColor), ends(cmp.ref, refColor)];
+        if (hasFlown) traces.push(trace("Flown", cmp.flown, "#FF3B30"), ends(cmp.flown, "#FF3B30"));
         const layout = {
           paper_bgcolor: theme.paper_bgcolor, plot_bgcolor: theme.plot_bgcolor, font: theme.font,
           margin: { l: 0, r: 0, t: 0, b: 0 },
+          showlegend: hasFlown,
           legend: { orientation: "h" },
           scene: {
             aspectmode: "data",
+            camera: { eye: { x: -1.25, y: -1.25, z: 0.9 } },
             xaxis: axis("East (m)"), yaxis: axis("North (m)"), zaxis: axis("Height (m)"),
           },
         };
-        Plotly.newPlot(host, [
-          trace("Trajectory", cmp.ref, colorOf(api, settings.color), "solid"),
-          trace("Flown", cmp.flown, "#FF3B30", "solid"),
-        ], layout, { displayModeBar: false, responsive: true });
+        host.textContent = "";
+        shown = Plotly;
+        const config = {
+          displayModeBar: "hover", displaylogo: false, responsive: true, doubleClick: false,
+          modeBarButtonsToRemove: ["toImage", "hoverClosest3d", "resetCameraDefault3d"],
+        };
+        return Plotly.newPlot(host, traces, layout, config).then(() => {
+          // The dialog is still fading in when the plot is measured, so it
+          // follows the dialog's own size from here on.
+          if (closed || typeof ResizeObserver !== "function") return;
+          observer = new ResizeObserver(() => {
+            if (shown && host.isConnected !== false) { try { shown.Plots.resize(host); } catch (e) { /* gone */ } }
+          });
+          observer.observe(host);
+        });
       }).catch((err) => {
+        shown = null;
         host.textContent = (err && err.message) || "The plot could not be drawn.";
       });
     }
@@ -816,6 +898,7 @@ Corvus.pluginTrajectory = (function () {
       onMap.setValue(settings.drawn);
       const hasPoints = points.length >= 2;
       fitBtn.disabled = !hasPoints;
+      compareBtn.disabled = !hasPoints;
       clearBtn.disabled = !hasPoints && !settings.file;
       describe();
     }
@@ -884,7 +967,8 @@ Corvus.pluginTrajectory = (function () {
     init, destroy, start,
     splitFields, parseTrajectory, encodePoints, decodePoints,
     localToLngLat, utmToLngLat, recordFlown, buildComparison, deviation, flown, toLngLat, pathLength, heightRange, anchorFromState, normalizeSettings,
-    FRAMES, UTM_ZONES, COLORS, AXES, MAX_POINTS, LINE_KEY,
+    loadPlotly3d,
+    FRAMES, UTM_ZONES, COLORS, AXES, MAX_POINTS, LINE_KEY, PLOTLY_3D,
   };
 })();
 

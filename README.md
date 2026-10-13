@@ -61,3 +61,9 @@ CORVUS_ROOT=/path/to/CorvusGCS node tests/test_trajectory_viewer.js
 
 Sustainable Use License, see [LICENSE.md](LICENSE.md). Copyright (c) 2026
 Maximilian Böck.
+
+`vendor/plotly-gl3d.min.js` is [plotly.js](https://plotly.com/javascript/)
+2.35.2 (the gl3d bundle), MIT licensed, copyright Plotly, Inc. Its licence
+notice is at the top of the file. Corvus itself ships Plotly without 3D
+traces, so the plugin brings this one for **Compare in 3D** and loads it the
+first time the button is pressed.

@@ -521,6 +521,78 @@ async function testClearForgetsTheFileAndTheLine() {
   tv.destroy(container);
 }
 
+// The app's plotly-basic has no scatter3d, so the plugin brings its own.
+const BASIC = { name: "basic" };
+const plots = [];
+const GL3D = {
+  name: "gl3d",
+  newPlot(host, traces, layout) { plots.push({ host, traces, layout }); return Promise.resolve(host); },
+  purge() {},
+};
+
+async function testThe3dBundleLoadsWithoutReplacingTheAppsPlotly() {
+  window.Plotly = BASIC;
+  const loading = tv.loadPlotly3d();
+  assert.equal(tv.loadPlotly3d(), loading, "one load, however many ask");
+  await flush();
+  const el = document.head.children.find((c) => c.tagName === "SCRIPT" && /plotly-gl3d/.test(c.src));
+  assert.ok(el, "the plugin's own bundle is fetched");
+  assert.ok(el.src.endsWith(tv.PLOTLY_3D), "from the plugin's folder");
+  window.Plotly = GL3D;
+  el.fire("load");
+  assert.equal(await loading, GL3D, "the plot gets the bundle with scatter3d");
+  assert.equal(window.Plotly, BASIC, "the rest of the app keeps plotly-basic");
+}
+
+function buttonLabelled(container, text) {
+  return all(container, "button").find((b) => b.textContent.includes(text));
+}
+
+async function testThe3dButtonPlotsTheTrajectoryWithoutAFlownTrack() {
+  tv.flown.length = 0;
+  plots.length = 0;
+  const api = fakeApi({ file: "route.csv", points: "11 48 0\n11.001 48.001 20\n11.002 48.0 40", frame: "wgs84" });
+  const container = makeEl("div");
+  tv.init(container, api);
+  const btn = buttonLabelled(container, "Compare in 3D");
+  assert.ok(btn, "the view has its 3D button");
+  assert.equal(btn.disabled, false);
+  btn.click();
+  await flush();
+  await flush();
+  assert.equal(plots.length, 1, "a 3D plot, not a warning");
+  const lines = plots[0].traces.filter((t) => t.mode === "lines");
+  assert.deepEqual(lines.map((t) => t.type), ["scatter3d"]);
+  assert.deepEqual(lines[0].z, [0, 20, 40], "heights as the file has them");
+  near(lines[0].x[1], 0.001 * Math.PI / 180 * 6378137 * Math.cos(48 * Math.PI / 180), 0.01, "east in metres");
+  tv.destroy(container);
+}
+
+async function testThe3dButtonAddsTheFlownTrackOnceThereIsOne() {
+  plots.length = 0;
+  tv.flown.length = 0;
+  tv.flown.push([11, 48, 500], [11.001, 48.001, 520]);
+  const api = fakeApi({ file: "route.csv", points: "11 48 0\n11.001 48.001 20", frame: "wgs84" });
+  const container = makeEl("div");
+  tv.init(container, api);
+  buttonLabelled(container, "Compare in 3D").click();
+  await flush();
+  await flush();
+  const lines = plots[0].traces.filter((t) => t.mode === "lines");
+  assert.deepEqual(lines.map((t) => t.name), ["Trajectory", "Flown"]);
+  assert.deepEqual(lines[1].z, [0, 20], "the flown track is above its own start");
+  tv.flown.length = 0;
+  tv.destroy(container);
+}
+
+function testThe3dButtonNeedsATrajectory() {
+  const api = fakeApi({});
+  const container = makeEl("div");
+  tv.init(container, api);
+  assert.equal(buttonLabelled(container, "Compare in 3D").disabled, true);
+  tv.destroy(container);
+}
+
 function testRegisteredWithAStartHook() {
   const listed = Corvus.plugins.list().find((p) => p.id === "trajectory-viewer");
   assert.ok(listed, "the plugin registers itself as it loads");
@@ -560,6 +632,10 @@ const tests = [
   testANewFileReplacesTheLineShowing,
   testABadFileKeepsWhatWasThere,
   testClearForgetsTheFileAndTheLine,
+  testThe3dBundleLoadsWithoutReplacingTheAppsPlotly,
+  testThe3dButtonPlotsTheTrajectoryWithoutAFlownTrack,
+  testThe3dButtonAddsTheFlownTrackOnceThereIsOne,
+  testThe3dButtonNeedsATrajectory,
   testRegisteredWithAStartHook,
 ];
 
