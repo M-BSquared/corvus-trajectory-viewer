@@ -256,6 +256,13 @@ function testTheComparisonIsInMetresAboveEachStart() {
   assert.deepEqual(tv.buildComparison([], null, []), { ref: [], flown: [] });
 }
 
+function testTheComparisonKeepsAmslHeightsWhenAsked() {
+  const cmp = tv.buildComparison([[11, 48], [11.001, 48]], [60, 60], [[11, 48, 500], [11, 48.001, 530]], true);
+  assert.equal(cmp.flown[0][2], 500);
+  assert.equal(cmp.flown[1][2], 530);
+  assert.equal(cmp.ref[1][2], 60);
+}
+
 function testTheDeviationIsTheDistanceToTheLine() {
   const ref = [[0, 0, 0], [100, 0, 0]];
   const d = tv.deviation(ref, [[50, 3, 0], [50, 0, 4], [150, 0, 0]]);
@@ -318,7 +325,7 @@ function testSavedSettingsAreChecked() {
     anchor: { lat: 95, lon: 11 }, points: 5,
   }, colors);
   assert.deepEqual(s, {
-    file: "", points: "", frame: "wgs84", utmZone: "32N", axes: "frd", color: "cyan", anchor: null, drawn: false,
+    file: "", points: "", frame: "wgs84", utmZone: "32N", axes: "frd", color: "cyan", anchor: null, drawn: false, amsl: false,
   });
   const ok = tv.normalizeSettings({
     frame: "local", axes: "flu", color: "orange", drawn: true, file: "a.csv",
@@ -603,6 +610,7 @@ function testRegisteredWithAStartHook() {
 const tests = [
   testTheFlownTrackIsRecordedWhileArmed,
   testTheComparisonIsInMetresAboveEachStart,
+  testTheComparisonKeepsAmslHeightsWhenAsked,
   testTheDeviationIsTheDistanceToTheLine,
   testUtm32nReadsEastingNorthing,
   testUtmCentralMeridianAndZone33,

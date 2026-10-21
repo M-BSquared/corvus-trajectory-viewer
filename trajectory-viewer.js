@@ -346,16 +346,19 @@ Corvus.pluginTrajectory = (function () {
    * Heights are above each track's own start: the reference's z as the file
    * has it (negated for the FRD local frame), the flown track's altitude minus
    * its first sample's. A file does not say what its z is measured from, so
-   * this is the one reading that compares them without a guess.
+   * this is the one reading that compares them without a guess. With `amsl`
+   * both keep their own heights instead: the flown track's altitude AMSL and
+   * the file's z, for a file that is itself written in AMSL.
    *
    * Pure, and exported for the test suite.
    *
    * @param {Array} coords reference [[lng, lat], ...]
    * @param {Array} heights reference height per point, or null
    * @param {Array} track flown [[lng, lat, alt], ...]
+   * @param {boolean} [amsl] keep absolute heights instead of heights above the start
    * @returns {{ref: Array, flown: Array}} [[east, north, up], ...] each
    */
-  function buildComparison(coords, heights, track) {
+  function buildComparison(coords, heights, track, amsl) {
     if (!coords.length) return { ref: [], flown: [] };
     const lng0 = coords[0][0];
     const lat0 = coords[0][1];
@@ -363,7 +366,7 @@ Corvus.pluginTrajectory = (function () {
     const cosPhi = Math.cos(lat0 * Math.PI / 180);
     const enu = (c, up) => [(c[0] - lng0) * k * cosPhi, (c[1] - lat0) * k, up];
     const ref = coords.map((c, i) => enu(c, heights && isFinite(heights[i]) ? heights[i] : 0));
-    const base = track.length ? track[0][2] : 0;
+    const base = !amsl && track.length ? track[0][2] : 0;
     return { ref, flown: track.map((c) => enu(c, c[2] - base)) };
   }
 
@@ -462,6 +465,7 @@ Corvus.pluginTrajectory = (function () {
       color: palette.some((c) => c.id === r.color) ? r.color : DEFAULT_COLOR,
       anchor,
       drawn: r.drawn === true,
+      amsl: r.amsl === true,
     };
   }
 
@@ -663,6 +667,12 @@ Corvus.pluginTrajectory = (function () {
         return undefined;
       },
     });
+    const amslToggle = ui.toggle({
+      id: "tvAmsl",
+      value: settings.amsl,
+      ariaLabel: "Show heights as altitude AMSL in 3D",
+      onChange: (next) => { save({ amsl: next }); return undefined; },
+    });
     const fitBtn = ui.button({
       variant: "secondary", icon: "scan", label: "Show me",
       title: "Frame the trajectory on the Home map",
@@ -693,7 +703,7 @@ Corvus.pluginTrajectory = (function () {
       status.hide();
       const heights = points.map((p) => (p[2] === null || p[2] === undefined ? 0
         : (settings.frame === "local" && settings.axes !== "flu" ? -p[2] : p[2])));
-      const cmp = buildComparison(res.coords, heights, flown);
+      const cmp = buildComparison(res.coords, heights, flown, settings.amsl);
       const hasFlown = cmp.flown.length >= 2;
       const dev = hasFlown ? deviation(cmp.ref, cmp.flown) : null;
       const host = document.createElement("div");
@@ -703,7 +713,7 @@ Corvus.pluginTrajectory = (function () {
       info.className = "tv-plot-info";
       if (dev) {
         info.textContent = `Largest distance from the trajectory ${formatLength(dev.max)}, ` +
-          `on average ${formatLength(dev.mean)}. Heights are above each track's start. ${VIEW_HINT}`;
+          `on average ${formatLength(dev.mean)}. ${settings.amsl ? "Heights are altitude AMSL." : "Heights are above each track's start."} ${VIEW_HINT}`;
       } else {
         info.textContent = "No flown track yet. It is recorded while the aircraft is armed " +
           `and then drawn here next to the trajectory. ${VIEW_HINT}`;
@@ -761,7 +771,7 @@ Corvus.pluginTrajectory = (function () {
           scene: {
             aspectmode: "data",
             camera: { eye: { x: -1.25, y: -1.25, z: 0.9 } },
-            xaxis: axis("East (m)"), yaxis: axis("North (m)"), zaxis: axis("Height (m)"),
+            xaxis: axis("East (m)"), yaxis: axis("North (m)"), zaxis: axis(settings.amsl ? "Altitude AMSL (m)" : "Height (m)"),
           },
         };
         host.textContent = "";
@@ -816,6 +826,14 @@ Corvus.pluginTrajectory = (function () {
             "top where the two cross.\n" +
             "The line stays on the map when you close this plugin, and comes " +
             "back after a restart, until you switch it off.",
+    }));
+    lineCard.appendChild(ui.field({
+      label: "Heights in AMSL (3D)",
+      control: amslToggle.el,
+      className: "field-switch",
+      info: "Off: both tracks start at height 0 and show the climb from there.\n" +
+            "On: the flown track is drawn at its altitude AMSL and the file's " +
+            "heights as written, for a file whose z is AMSL too.",
     }));
     const actions = document.createElement("div");
     actions.className = "tv-actions";
@@ -896,6 +914,7 @@ Corvus.pluginTrajectory = (function () {
         b.setAttribute("aria-checked", on ? "true" : "false");
       });
       onMap.setValue(settings.drawn);
+      amslToggle.setValue(settings.amsl);
       const hasPoints = points.length >= 2;
       fitBtn.disabled = !hasPoints;
       compareBtn.disabled = !hasPoints;
