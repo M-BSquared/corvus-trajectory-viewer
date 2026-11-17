@@ -7,63 +7,64 @@ It draws a trajectory from a file on the Home map: a route someone planned
 elsewhere, a survey pattern, or yesterday's flight, as a reference to fly
 against. The line lies under the flown track, so while the aircraft flies its
 own path is always on top and you see at a glance where it leaves the
-reference.
+reference. **Compare in 3D** draws the trajectory and the flown track in one
+view you can turn and zoom, with the largest and the average distance between
+them.
 
 The file is plain text, one point per line, in WGS84 (longitude, latitude),
-GPS order (latitude, longitude), UTM metres (EPSG:32632, 25832, 32633) or metres in the aircraft's own frame.
+GPS order (latitude, longitude), UTM metres (zones 31N to 35N, among them
+EPSG:32632, 25832 and 32633) or metres in the aircraft's own frame.
 
 The full description is in the
 [Corvus guide](https://m-bsquared.github.io/CorvusGCS/guide/plugins.html#trajectory-viewer).
 
-## What it needs
+## What it is
 
-- Corvus GCS newer than 2026.10.03, the first with `api.map` and start hooks
-  for plugins.
+A Rust crate (`corvus_plugin_trajectory_viewer`) built on `corvus_api`, the
+plugin API of Corvus GCS. Corvus compiles its plugins in: there is no loader
+and no JavaScript, so the plugin works the same on every platform Corvus is
+built for.
 
-## Install
+- `src/model.rs`: the rules, free of the interface: reading a file, the
+  conversions to longitude and latitude (UTM by the Krüger series, the local
+  frame), the flown track and its distance from the trajectory, the saved
+  settings. Its tests hold the conversions to what the web plugin answered.
+- `src/lib.rs`: the plugin: the line on the map, what a change does to it,
+  what is saved.
+- `src/view.rs`: the card and the 3D comparison, drawn by the plugin itself.
+- `lang/`: German, French and the dialect file.
 
-1. Download this repository: **Code, Download ZIP**, or `git clone`.
-2. In Corvus, open **Settings, Plugins, Open plugin folder**.
-3. Put the folder there and name it `trajectory-viewer`. That is the folder its
-   settings are kept in.
-4. Restart Corvus. The plugin is on the PLUGINS tab.
+The web plugin this replaces (`trajectory-viewer.js`, its stylesheet, its
+tests and the Plotly bundle under `vendor/`) is no longer loaded by Corvus.
+The Rust crate needs none of it.
 
-With git, in one step:
+## Build
+
+Corvus GCS carries this repository as a submodule at
+`plugins/trajectory-viewer`:
 
 ```bash
-git clone https://github.com/M-BSquared/corvus-trajectory-viewer.git ~/.corvus/plugins/trajectory-viewer
+git clone --recurse-submodules https://github.com/M-BSquared/CorvusGCS.git
 ```
 
-On Windows the plugin folder is `%USERPROFILE%\.corvus\plugins`.
+In a checkout that was cloned without it:
 
-## Update
+```bash
+git submodule update --init plugins/trajectory-viewer
+```
 
-Replace the folder's files with the new ones and restart Corvus, or run
-`git pull` inside it. Keep `config.json`: it holds the plugin's settings.
+Then `./run.sh` in the Corvus checkout builds and runs Corvus with the plugin.
+It is on the PLUGINS tab.
 
 ## Tests
 
-The tests in `tests/` run against Corvus's own scripts, so they need a Corvus
-checkout. Inside one, with this plugin in `plugins/trajectory-viewer/`, Corvus runs them
-with its own:
+From the Corvus checkout:
 
 ```bash
-node tools/frontend_tests.js
-```
-
-Anywhere else, point them at the checkout:
-
-```bash
-CORVUS_ROOT=/path/to/CorvusGCS node tests/test_trajectory_viewer.js
+cargo test -p corvus_plugin_trajectory_viewer
 ```
 
 ## Licence
 
 Sustainable Use License, see [LICENSE.md](LICENSE.md). Copyright (c) 2026
 Maximilian Böck.
-
-`vendor/plotly-gl3d.min.js` is [plotly.js](https://plotly.com/javascript/)
-2.35.2 (the gl3d bundle), MIT licensed, copyright Plotly, Inc. Its licence
-notice is at the top of the file. Corvus itself ships Plotly without 3D
-traces, so the plugin brings this one for **Compare in 3D** and loads it the
-first time the button is pressed.
