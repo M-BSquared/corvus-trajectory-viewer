@@ -743,7 +743,7 @@ Corvus.pluginTrajectory = (function () {
         const theme = ui.plotlyTheme ? ui.plotlyTheme() : {};
         const base = theme.xaxis || {};
         const axis = (title) => ({
-          title, gridcolor: base.gridcolor, zerolinecolor: base.zerolinecolor,
+          title: { text: title }, gridcolor: base.gridcolor, zerolinecolor: base.zerolinecolor,
           linecolor: base.linecolor, tickfont: base.tickfont,
           showbackground: false,
         });
@@ -777,7 +777,7 @@ Corvus.pluginTrajectory = (function () {
         host.textContent = "";
         shown = Plotly;
         const config = {
-          displayModeBar: "hover", displaylogo: false, responsive: true, doubleClick: false,
+          displayModeBar: "hover", displaylogo: false, showSendToCloud: false, responsive: true, doubleClick: false,
           modeBarButtonsToRemove: ["toImage", "hoverClosest3d", "resetCameraDefault3d"],
         };
         return Plotly.newPlot(host, traces, layout, config).then(() => {

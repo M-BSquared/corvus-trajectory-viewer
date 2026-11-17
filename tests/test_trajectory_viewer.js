@@ -533,7 +533,7 @@ const BASIC = { name: "basic" };
 const plots = [];
 const GL3D = {
   name: "gl3d",
-  newPlot(host, traces, layout) { plots.push({ host, traces, layout }); return Promise.resolve(host); },
+  newPlot(host, traces, layout, config) { plots.push({ host, traces, layout, config }); return Promise.resolve(host); },
   purge() {},
 };
 
@@ -572,6 +572,11 @@ async function testThe3dButtonPlotsTheTrajectoryWithoutAFlownTrack() {
   assert.deepEqual(lines.map((t) => t.type), ["scatter3d"]);
   assert.deepEqual(lines[0].z, [0, 20, 40], "heights as the file has them");
   near(lines[0].x[1], 0.001 * Math.PI / 180 * 6378137 * Math.cos(48 * Math.PI / 180), 0.01, "east in metres");
+  // Plotly 4 puts an "Upload to Cloud" button in the toolbar unless told not
+  // to, and this plot shows its toolbar. An offline station has no use for it.
+  assert.equal(plots[0].config.showSendToCloud, false, "no cloud upload button");
+  // Plotly 3 and later draw no axis title given as a bare string.
+  assert.equal(plots[0].layout.scene.xaxis.title.text, "East (m)");
   tv.destroy(container);
 }
 
