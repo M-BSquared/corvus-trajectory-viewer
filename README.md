@@ -21,9 +21,8 @@ The full description is in the
 ## What it is
 
 A Rust crate (`corvus_plugin_trajectory_viewer`) built on `corvus_api`, the
-plugin API of Corvus GCS. Corvus compiles its plugins in: there is no loader
-and no JavaScript, so the plugin works the same on every platform Corvus is
-built for.
+plugin API of Corvus GCS. It is not part of the program: it is published as a shared
+library from this repository and installed from Settings, Plugins. There is no JavaScript.
 
 - `src/model.rs`: the rules, free of the interface: reading a file, the
   conversions to longitude and latitude (UTM by the Krüger series, the local
@@ -38,23 +37,27 @@ The web plugin this replaces (`trajectory-viewer.js`, its stylesheet, its
 tests and the Plotly bundle under `vendor/`) is no longer loaded by Corvus.
 The Rust crate needs none of it.
 
-## Build
+## Change it
 
-Corvus GCS carries this repository as a submodule at
-`plugins/trajectory-viewer`:
+Corvus GCS carries this repository as a submodule at `plugins/trajectory-viewer`, and the
+crate is a member of its workspace:
 
 ```bash
 git clone --recurse-submodules https://github.com/M-BSquared/CorvusGCS.git
+cd CorvusGCS
+./run.sh
 ```
 
-In a checkout that was cloned without it:
+Settings, Plugins then offers the copy built there. A dependency must be one
+that `Cargo.lock` of Corvus GCS already holds.
 
-```bash
-git submodule update --init plugins/trajectory-viewer
-```
+## Publish it
 
-Then `./run.sh` in the Corvus checkout builds and runs Corvus with the plugin.
-It is on the PLUGINS tab.
+Commit and push to `main`. The workflow tests the plugin, builds it for the
+newest published Corvus GCS on Linux, macOS and Windows, lets that program load
+it, and attaches it to the release `corvus-<version>` of this repository, where
+Corvus GCS of that version finds it. A new version of Corvus GCS gets its build
+within hours.
 
 ## Tests
 

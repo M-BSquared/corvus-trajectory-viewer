@@ -307,10 +307,30 @@ pub fn plugin() -> Box<dyn Plugin> {
     Box::new(Trajectory::default())
 }
 
+corvus_api::export_plugin!(plugin, LANG);
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_details_the_store_lists_are_the_plugins_own() {
+        let manifest = include_str!("../Cargo.toml").replace('\r', "");
+        let i = plugin().info();
+        for (key, want) in [
+            ("name", i.name),
+            ("description", i.description),
+            ("icon", i.icon),
+            ("version", i.version),
+        ] {
+            assert!(
+                manifest.contains(&format!("\n{key} = \"{want}\"\n")),
+                "[package.metadata.corvus] says something else than the plugin for {key}"
+            );
+        }
+    }
+
     use super::*;
     use corvus_api::net::http::Server;
+    use corvus_api::plugin::bus::Bus;
     use corvus_api::plugin::shapes::ShapeSet;
     use corvus_api::plugin::Outbox;
     use serde_json::{json, Map};
@@ -320,8 +340,11 @@ mod tests {
         let ctx = egui::Context::default();
         let server = Server::local(1);
         let (mut saved, opts, mut out) = (json!({}), Map::new(), Outbox::default());
+        let mut bus = Bus::default();
         let info = Trajectory::default().info();
-        let mut host = Host::new(&ctx, &server, state, info, shapes, &mut saved, &opts, &mut out);
+        let mut host = Host::new(
+            &ctx, &server, state, info, shapes, &mut saved, &opts, &mut out, &mut bus,
+        );
         f(&mut host)
     }
 
@@ -418,9 +441,20 @@ mod tests {
         let server = Server::local(1);
         let mut saved = json!({"file": "r.txt", "points": "11.5 48.1\n11.6 48.2", "drawn": true, "color": "orange"});
         let (opts, mut out, state) = (Map::new(), Outbox::default(), json!({}));
+        let mut bus = Bus::default();
         let mut t = Trajectory::default();
         let info = t.info();
-        let mut h = Host::new(&ctx, &server, &state, info, &mut shapes, &mut saved, &opts, &mut out);
+        let mut h = Host::new(
+            &ctx,
+            &server,
+            &state,
+            info,
+            &mut shapes,
+            &mut saved,
+            &opts,
+            &mut out,
+            &mut bus,
+        );
         t.start(&mut h);
         assert_eq!((t.points.len(), t.settings.color.as_str()), (2, "orange"));
         assert!(shapes.has(LINE_KEY));
