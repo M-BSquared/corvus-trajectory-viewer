@@ -2,7 +2,7 @@
 //! colour, the switches and the buttons) and the 3D comparison with the flown
 //! track (`init` and `showComparison` of `trajectory-viewer.js`).
 
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use corvus_api::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 
 use corvus_api::plugin::shapes::hex;
 use corvus_api::plugin::Host;
@@ -274,22 +274,12 @@ fn choose_file(t: &mut Trajectory, h: &mut Host) {
         return;
     };
     let name = filepicker::file_name(&path);
-    match std::fs::metadata(&path) {
-        Ok(m) if m.len() > model::MAX_FILE_BYTES => {
-            t.say(
-                format!("{name} is larger than {} MB.", model::MAX_FILE_BYTES / 1024 / 1024),
-                Tone::Err,
-            );
-            return;
-        }
-        Ok(_) => {}
-        Err(_) => {
-            t.say("Could not read the file.", Tone::Err);
-            return;
-        }
-    }
-    match std::fs::read(&path) {
+    match filepicker::read(&path, model::MAX_FILE_BYTES) {
         Ok(bytes) => t.take_file(&name, &String::from_utf8_lossy(&bytes), h),
+        Err(e) if e == filepicker::TOO_LARGE => t.say(
+            format!("{name} is larger than {} MB.", model::MAX_FILE_BYTES / 1024 / 1024),
+            Tone::Err,
+        ),
         Err(_) => t.say("Could not read the file.", Tone::Err),
     }
 }

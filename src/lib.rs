@@ -24,7 +24,7 @@
 pub mod model;
 mod view;
 
-use eframe::egui;
+use corvus_api::egui;
 use serde_json::Value;
 
 use corvus_api::data::units::Units;
@@ -236,7 +236,7 @@ impl Plugin for Trajectory {
             name: "Trajectory Viewer",
             icon: "spline",
             description: "Draws a trajectory from a file on the Home map, under the flown track",
-            version: "2.0.0",
+            version: "3.0.0",
             order: 40,
             can_tab: false,
         }
@@ -312,20 +312,20 @@ corvus_api::export_plugin!(plugin, LANG);
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_details_the_store_lists_are_the_plugins_own() {
-        let manifest = include_str!("../Cargo.toml").replace('\r', "");
-        let i = plugin().info();
+    fn the_manifest_says_what_the_plugin_says_of_itself() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../plugin.json")).expect("plugin.json");
+        let i = Trajectory::default().info();
         for (key, want) in [
+            ("id", i.id),
             ("name", i.name),
             ("description", i.description),
             ("icon", i.icon),
             ("version", i.version),
         ] {
-            assert!(
-                manifest.contains(&format!("\n{key} = \"{want}\"\n")),
-                "[package.metadata.corvus] says something else than the plugin for {key}"
-            );
+            assert_eq!(manifest[key], want, "plugin.json says something else than the plugin for {key}");
         }
+        assert_eq!(manifest["order"], i.order);
+        assert_eq!(manifest["can_tab"], i.can_tab);
     }
 
     use super::*;

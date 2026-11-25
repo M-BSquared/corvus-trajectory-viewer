@@ -1,0 +1,11 @@
+{
+  "id": "trajectory-viewer",
+  "name": "Trajectory Viewer",
+  "description": "Draws a trajectory from a file on the Home map, under the flown track",
+  "icon": "spline",
+  "version": "3.0.0",
+  "order": 40,
+  "can_tab": false,
+  "min_corvus": "2026.11.94",
+  "permissions": ["files", "settings.read"]
+}

@@ -11,16 +11,9 @@ description = "The Trajectory Viewer plugin of Corvus GCS"
 # is a member of that workspace and takes its dependency versions from it.
 [dependencies]
 corvus_api = { path = "../../src/api" }
-eframe = { workspace = true }
 serde_json = { workspace = true }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 # Published as a shared library that Settings installs, not compiled into the program.
-[package.metadata.corvus]
-loadable = true
-name = "Trajectory Viewer"
-description = "Draws a trajectory from a file on the Home map, under the flown track"
-icon = "spline"
-version = "2.0.0"
